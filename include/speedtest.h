@@ -43,8 +43,9 @@ typedef struct {
     size_t total_bytes_sent;
 
     /* Speeds */
-    double speed_formula_kbps;    /* (windowSize * 8) / (2 * avg_rtt_sec) */
-    double speed_actual_kbps;     /* (10 * file_size * 8) / (total_elapsed_sec) */
+    double speed_formula_2rtt_kbps;  /* (windowSize * 8) / (2 * avg_rtt_sec) - Non-persistent model (Lab formula) */
+    double speed_formula_1rtt_kbps;  /* (windowSize * 8) / (1 * avg_rtt_sec) - Persistent connection model (No handshake repeated) */
+    double speed_actual_kbps;        /* (10 * file_size * 8) / (total_elapsed_sec) - Empirical wall-clock throughput */
 } speedtest_results_t;
 
 typedef struct {

@@ -24,6 +24,26 @@ void logger_section(const char *label);
 void logger_segment(int outbound, uint8_t flags, uint32_t seq, uint32_t ack,
                     const unsigned char *data, size_t data_len, int has_ack);
 
+#define ANSI_RESET       "\x1b[0m"
+#define ANSI_BOLD        "\x1b[1m"
+#define ANSI_DIM         "\x1b[2m"
+#define ANSI_RED         "\x1b[31m"
+#define ANSI_GREEN       "\x1b[32m"
+#define ANSI_YELLOW      "\x1b[33m"
+#define ANSI_BLUE        "\x1b[34m"
+#define ANSI_MAGENTA     "\x1b[35m"
+#define ANSI_CYAN        "\x1b[36m"
+#define ANSI_WHITE       "\x1b[37m"
+#define ANSI_BOLD_RED    "\x1b[1;31m"
+#define ANSI_BOLD_GREEN  "\x1b[1;32m"
+#define ANSI_BOLD_YELLOW "\x1b[1;33m"
+#define ANSI_BOLD_BLUE   "\x1b[1;34m"
+#define ANSI_BOLD_MAGENTA "\x1b[1;35m"
+#define ANSI_BOLD_CYAN   "\x1b[1;36m"
+#define ANSI_BOLD_WHITE  "\x1b[1;37m"
+
+int logger_use_color(void);
+
 const char *tcp_flags_to_str(uint8_t flags, char *buf, size_t buf_len);
 
 #define LOG_DEBUG(fmt, ...) logger_log(LOG_LEVEL_DEBUG, __FILE__, __func__, __LINE__, fmt, ##__VA_ARGS__)

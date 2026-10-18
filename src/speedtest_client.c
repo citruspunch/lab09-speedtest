@@ -270,6 +270,7 @@ int tcp_session_upload_files(tcp_session_t *s, const uint8_t *file_data, size_t 
 void tcp_session_close(tcp_session_t *s, int timeout_sec)
 {
     tcp_header_t recv_tcph;
+    uint8_t payload[256];
     int payload_len = 0;
 
     logger_section("TCP CONNECTION TEARDOWN");
@@ -280,18 +281,39 @@ void tcp_session_close(tcp_session_t *s, int timeout_sec)
     logger_segment(1, TCP_FIN | TCP_ACK, fin_seq, fin_ack, NULL, 0, 1);
     s->seq++;
 
-    /* Wait for ACK or FIN+ACK */
-    if (wait_for_packet(s, TCP_ACK, TCP_ACK, &recv_tcph, NULL, 0, &payload_len, timeout_sec * 1000) == 0) {
-        logger_segment(0, recv_tcph.flags, ntohl(recv_tcph.seq_num), ntohl(recv_tcph.ack_num), NULL, 0, 1);
-        if (recv_tcph.flags & TCP_FIN) {
-            s->ack = ntohl(recv_tcph.seq_num) + 1;
-            send_control(s, TCP_ACK);
-            logger_segment(1, TCP_ACK, s->seq, s->ack, NULL, 0, 1);
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+    int got_fin = 0;
+
+    while (1) {
+        payload_len = 0;
+        if (wait_for_packet(s, TCP_ACK, TCP_ACK, &recv_tcph, payload, sizeof(payload) - 1, &payload_len, 1000) == 0) {
+            uint32_t s_seq = ntohl(recv_tcph.seq_num);
+            uint32_t s_ack = ntohl(recv_tcph.ack_num);
+            logger_segment(0, recv_tcph.flags, s_seq, s_ack, (payload_len > 0) ? payload : NULL, payload_len, 1);
+
+            if (payload_len > 0) {
+                s->ack = s_seq + (uint32_t)payload_len;
+            }
+            if (recv_tcph.flags & TCP_FIN) {
+                s->ack = s_seq + ((payload_len > 0) ? (uint32_t)payload_len : 0) + 1;
+                send_control(s, TCP_ACK);
+                logger_segment(1, TCP_ACK, s->seq, s->ack, NULL, 0, 1);
+                got_fin = 1;
+                break;
+            }
         }
-    } else {
-        LOG_WARN("Timeout waiting for FIN acknowledgment");
+
+        gettimeofday(&now, NULL);
+        double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_usec - start.tv_usec) / 1000000.0;
+        if (elapsed >= timeout_sec) break;
     }
 
+    if (!got_fin) {
+        LOG_WARN("Timeout waiting for server FIN");
+    }
+
+    usleep(15000); /* 15 ms to allow final ACK to flush onto wire */
     close_raw_socket(s->sockfd);
     s->sockfd = -1;
     logger_section("CONNECTION CLOSED");
@@ -338,49 +360,74 @@ static uint8_t *load_file(const char *path, size_t *out_size) {
 }
 
 static void print_results(const speedtest_results_t *r) {
+    int c = logger_use_color();
+    const char *b_cyan   = c ? ANSI_BOLD_CYAN    : "";
+    const char *b_yellow = c ? ANSI_BOLD_YELLOW  : "";
+    const char *b_green  = c ? ANSI_BOLD_GREEN   : "";
+    const char *b_mag    = c ? ANSI_BOLD_MAGENTA : "";
+    const char *b_blue   = c ? ANSI_BOLD_BLUE    : "";
+    const char *b_white  = c ? ANSI_BOLD_WHITE   : "";
+    const char *dim      = c ? ANSI_DIM          : "";
+    const char *reset    = c ? ANSI_RESET        : "";
+
     printf("\n");
-    printf("======================================================================\n");
-    printf("                    SPEEDTEST PERFORMANCE SUMMARY                     \n");
-    printf("======================================================================\n");
-    printf(" [STAGE 1] Latency Measurement (ICMP Ping)\n");
-    printf("   * Measured Ping Latency:             %8.3f ms\n", r->ping_latency_ms);
-    printf("----------------------------------------------------------------------\n");
-    printf(" [STAGE 2] TCP RAW Connection & Transmission\n");
-    printf("   * Initial TCP Handshake RTT:         %8.3f ms  (SYN -> SYN+ACK)\n", r->handshake_rtt_ms);
-    printf("   * Payload per Transfer:              %8zu bytes (1 KB)\n", r->file_size_bytes);
-    printf("   * Transfers Completed:               %8d transfers\n", r->num_transfers);
-    printf("   * Total Bytes Transmitted:           %8zu bytes\n", r->total_bytes_sent);
-    printf("   * Transfer RTT (Min):                %8.3f ms\n", r->min_transfer_rtt_ms);
-    printf("   * Transfer RTT (Average):            %8.3f ms\n", r->avg_transfer_rtt_ms);
-    printf("   * Transfer RTT (Max):                %8.3f ms\n", r->max_transfer_rtt_ms);
-    printf("   * Total Wall-Clock Elapsed Time:     %8.3f ms\n", r->total_elapsed_ms);
-    printf("----------------------------------------------------------------------\n");
-    printf(" [STAGE 3] Speed Calculations (Lab Specification)\n");
+    printf("%s======================================================================%s\n", b_cyan, reset);
+    printf("%s                    SPEEDTEST PERFORMANCE SUMMARY                     %s\n", b_cyan, reset);
+    printf("%s======================================================================%s\n", b_cyan, reset);
+    printf(" %s[STAGE 1] Latency Measurement (ICMP Ping)%s\n", b_yellow, reset);
+    printf("   * Measured Ping Latency:             %s%8.3f ms%s\n", b_white, r->ping_latency_ms, reset);
+    printf("%s----------------------------------------------------------------------%s\n", dim, reset);
+    printf(" %s[STAGE 2] TCP RAW Connection & Transmission%s\n", b_yellow, reset);
+    printf("   * Initial TCP Handshake RTT:         %s%8.3f ms%s  %s(SYN -> SYN+ACK)%s\n",
+           b_white, r->handshake_rtt_ms, reset, dim, reset);
+    printf("   * Payload per Transfer:              %s%8zu bytes%s %s(1 KB)%s\n",
+           b_white, r->file_size_bytes, reset, dim, reset);
+    printf("   * Transfers Completed:               %s%8d transfers%s\n",
+           b_white, r->num_transfers, reset);
+    printf("   * Total Bytes Transmitted:           %s%8zu bytes%s\n",
+           b_white, r->total_bytes_sent, reset);
+    printf("   * Transfer RTT (Min):                %s%8.3f ms%s\n", b_white, r->min_transfer_rtt_ms, reset);
+    printf("   * Transfer RTT (Average):            %s%8.3f ms%s\n", b_white, r->avg_transfer_rtt_ms, reset);
+    printf("   * Transfer RTT (Max):                %s%8.3f ms%s\n", b_white, r->max_transfer_rtt_ms, reset);
+    printf("   * Total Wall-Clock Elapsed Time:     %s%8.3f ms%s\n", b_white, r->total_elapsed_ms, reset);
+    printf("%s----------------------------------------------------------------------%s\n", dim, reset);
+    printf(" %s[STAGE 3] Speed Calculations & Throughput Variants%s\n", b_yellow, reset);
     printf("   * Formula: Total Time = RTT + (RTT + transmit time)\n");
-    printf("     Total Cycle Time:                  %8.3f ms  (Initial RTT + Avg Transfer RTT)\n",
-           r->total_cycle_time_ms);
-    printf("     Assumed Cycle (2 * Avg RTT):       %8.3f ms\n", 2.0 * r->avg_transfer_rtt_ms);
+    printf("     Total Cycle Time:                  %s%8.3f ms%s  %s(Initial RTT + Avg Transfer RTT)%s\n",
+           b_white, r->total_cycle_time_ms, reset, dim, reset);
+    printf("     Assumed Cycle (2 * Avg RTT):       %s%8.3f ms%s\n",
+           b_white, 2.0 * r->avg_transfer_rtt_ms, reset);
     printf("\n");
 
-    /* Lab prompt formula: Speed = windowSize / ~RTT
-     * With 1000 bytes: (1000 * 8) / (2 * RTT_sec) */
+    /* Lab prompt formula: Speed = windowSize / ~RTT */
     double rtt_sec = r->avg_transfer_rtt_ms / 1000.0;
-    double speed_lab_1000_kbps = (1000.0 * 8.0) / (2.0 * rtt_sec * 1000.0); /* in kbps */
-    double speed_lab_1024_kbps = (1024.0 * 8.0) / (2.0 * rtt_sec * 1000.0); /* in kbps */
+    double speed_2rtt_1000_kbps = (1000.0 * 8.0) / (2.0 * rtt_sec * 1000.0);
+    double speed_2rtt_1024_kbps = (1024.0 * 8.0) / (2.0 * rtt_sec * 1000.0);
+    double speed_1rtt_1000_kbps = (1000.0 * 8.0) / (1.0 * rtt_sec * 1000.0);
+    double speed_1rtt_1024_kbps = (1024.0 * 8.0) / (1.0 * rtt_sec * 1000.0);
 
-    printf("   * Formula Speed (Decimal 1000 B, 2 * RTT):\n");
-    printf("     Speed = (1000 * 8) / (2 * %.6f s) = %10.2f kbps (%6.2f Mbps)\n",
-           rtt_sec, speed_lab_1000_kbps, speed_lab_1000_kbps / 1000.0);
+    printf(" %s[VARIANTE A] Modelo con Costo de Conexion por Envio (2 x RTT):%s\n", b_mag, reset);
+    printf("   * Supuesto: Cada envio asume RTT_handshake + (RTT + T_trans) ~= 2 * RTT\n");
+    printf("     - Con 1000 Bytes: (1000 * 8) / (2 * %.6f s) = %s%10.2f kbps (%6.2f Mbps)%s\n",
+           rtt_sec, b_green, speed_2rtt_1000_kbps, speed_2rtt_1000_kbps / 1000.0, reset);
+    printf("     - Con 1024 Bytes: (1024 * 8) / (2 * %.6f s) = %s%10.2f kbps (%6.2f Mbps)%s\n",
+           rtt_sec, b_green, speed_2rtt_1024_kbps, speed_2rtt_1024_kbps / 1000.0, reset);
+    printf("\n");
 
-    printf("   * Formula Speed (Binary 1024 B, 2 * RTT):\n");
-    printf("     Speed = (1024 * 8) / (2 * %.6f s) = %10.2f kbps (%6.2f Mbps)\n",
-           rtt_sec, speed_lab_1024_kbps, speed_lab_1024_kbps / 1000.0);
+    printf(" %s[VARIANTE B] Conexion Persistente / Misma Conexion TCP (Modelo 1 x RTT):%s\n", b_cyan, reset);
+    printf("   * Supuesto: Handshake unico inicial; cada envio es RTT + T_trans ~= 1 * RTT (T_trans ~= 0)\n");
+    printf("     - Con 1000 Bytes: (1000 * 8) / (1 * %.6f s) = %s%10.2f kbps (%6.2f Mbps)%s\n",
+           rtt_sec, b_green, speed_1rtt_1000_kbps, speed_1rtt_1000_kbps / 1000.0, reset);
+    printf("     - Con 1024 Bytes: (1024 * 8) / (1 * %.6f s) = %s%10.2f kbps (%6.2f Mbps)%s\n",
+           rtt_sec, b_green, speed_1rtt_1024_kbps, speed_1rtt_1024_kbps / 1000.0, reset);
+    printf("\n");
 
-    printf("   * Effective Upload Throughput (Actual Wall-Clock):\n");
-    printf("     Throughput = (%zu * 8) / (%.6f s) = %10.2f kbps (%6.2f Mbps)\n",
+    printf(" %s[VARIANTE C] Rendimiento Efectivo Empirico (Throughput Real Wall-Clock):%s\n", b_blue, reset);
+    printf("   * Supuesto: Medicion real del tiempo total transcurrido para los 10 archivos\n");
+    printf("     - Throughput:     (%zu * 8) / (%.6f s) = %s%10.2f kbps (%6.2f Mbps)%s\n",
            r->total_bytes_sent, r->total_elapsed_ms / 1000.0,
-           r->speed_actual_kbps, r->speed_actual_kbps / 1000.0);
-    printf("======================================================================\n\n");
+           b_green, r->speed_actual_kbps, r->speed_actual_kbps / 1000.0, reset);
+    printf("%s======================================================================%s\n\n", b_cyan, reset);
 }
 
 static void print_usage(const char *prog) {
@@ -503,7 +550,8 @@ int main(int argc, char **argv) {
 
     double avg_rtt_sec = results.avg_transfer_rtt_ms / 1000.0;
     if (avg_rtt_sec > 0.0) {
-        results.speed_formula_kbps = (1000.0 * 8.0) / (2.0 * avg_rtt_sec * 1000.0);
+        results.speed_formula_2rtt_kbps = (1000.0 * 8.0) / (2.0 * avg_rtt_sec * 1000.0);
+        results.speed_formula_1rtt_kbps = (1000.0 * 8.0) / (1.0 * avg_rtt_sec * 1000.0);
     }
 
     double elapsed_sec = results.total_elapsed_ms / 1000.0;

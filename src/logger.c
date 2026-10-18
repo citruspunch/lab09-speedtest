@@ -23,9 +23,15 @@ static log_level_t current_level = LOG_LEVEL_INFO;
 #define ANSI_BOLD    "\x1b[1m"
 #define ANSI_DIM     "\x1b[2m"
 
-static int is_tty(void) {
+int logger_use_color(void) {
     static int cached = -1;
-    if (cached == -1) cached = isatty(fileno(stdout));
+    if (cached == -1) {
+        if (getenv("NO_COLOR") != NULL) {
+            cached = 0;
+        } else {
+            cached = 1; /* Always display colors by default */
+        }
+    }
     return cached;
 }
 
@@ -87,7 +93,7 @@ void logger_log(log_level_t level, const char *file, const char *func, int line,
     const char *base_file = strrchr(file, '/');
     base_file = base_file ? base_file + 1 : file;
 
-    if (is_tty()) {
+    if (logger_use_color()) {
         printf("%s%s %s.%s():%d\t%s%s : %s%s\n",
                ANSI_DIM, timestamp, base_file, func, line,
                color, lvl_str, message, ANSI_RESET);
@@ -105,7 +111,7 @@ void logger_log(log_level_t level, const char *file, const char *func, int line,
 }
 
 void logger_banner(const char *title, const char *subtitle) {
-    if (is_tty()) {
+    if (logger_use_color()) {
         printf("\n%s%s╔════════════════════════════════════════════════════════════╗%s\n", ANSI_CYAN, ANSI_BOLD, ANSI_RESET);
         printf("%s%s║ %-58s ║%s\n", ANSI_CYAN, ANSI_BOLD, title, ANSI_RESET);
         if (subtitle && *subtitle) {
@@ -135,7 +141,7 @@ void logger_section(const char *label) {
 
     snprintf(line, sizeof(line), "%s %s %s", dashes, label, dashes);
 
-    if (is_tty()) {
+    if (logger_use_color()) {
         printf("%s%s%s%s\n", ANSI_CYAN, ANSI_BOLD, line, ANSI_RESET);
     } else {
         printf("%s\n", line);
@@ -189,7 +195,7 @@ void logger_segment(int outbound, uint8_t flags, uint32_t seq, uint32_t ack,
         snprintf(desc_part, sizeof(desc_part), " (1 KB Payload)");
     }
 
-    if (is_tty()) {
+    if (logger_use_color()) {
         printf("%s%-16s%s [%s%s%s] SEQ=%u%s%s%s\n",
                dir_color, dir_str, ANSI_RESET,
                ANSI_BOLD, flags_str, ANSI_RESET,

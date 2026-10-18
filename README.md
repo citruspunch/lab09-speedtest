@@ -1,232 +1,205 @@
-# CC8 — Laboratorio 09: SpeedTest (Raw Sockets TCP)
+# CC8 Lab 09: Speedtest con raw sockets TCP
 
-Implementación en **lenguaje C puro** de un benchmark de rendimiento de red tipo *Speedtest* utilizando **RAW Sockets** para construir y gestionar manualmente toda la secuencia del protocolo TCP a nivel de headers IPv4 y TCP.
+Benchmark de red escrito en C para medir latencia y velocidad de transferencia TCP usando sockets raw, con ensamblado manual de paquetes IPv4 y TCP.
 
----
+## 1. Objetivos
 
-## 1. Objetivos del Laboratorio
+- Construcción manual de cabeceras IPv4 y segmentos TCP con banderas SYN, ACK, PSH y FIN.
+- Cálculo de checksums de Internet (RFC 793) y pseudo-header TCP.
+- Medición de latencia ICMP directa desde C sin dependencias de comandos externos.
+- Establecimiento de sesión TCP mediante handshake de tres vías.
+- Transmisión de un archivo de 1 KB (1024 bytes) repetido 10 veces consecutivas sobre la misma conexión TCP.
+- Registro del RTT por envío y evaluación de velocidad bajo tres modelos de throughput.
 
-1. **Comprender la estructura y secuencia de los headers TCP e IPv4**:
-   - Construcción manual de paquetes TCP (`SYN`, `ACK`, `PSH`, `FIN`) y cabeceras IPv4.
-   - Cálculo de checksums de Internet (RFC 793) y pseudo-header TCP.
-2. **Medición de rendimiento en 3 etapas**:
-   - **Etapa 1 (Latencia)**: Medición directa de tiempo de ida y vuelta (RTT) mediante ICMP Ping implementado en C.
-   - **Etapa 2 (Handshake y Transmisión con RAW Sockets)**: Establecimiento de sesión TCP (`3-way Handshake`) y transmisión de un archivo de **1 KB (1024 bytes)** repetido **10 veces consecutivas** sobre la misma conexión TCP activa.
-   - **Etapa 3 (Cálculo de Velocidad de Transmisión)**: Cálculo de RTT promedio, tiempo total de ciclo y velocidad de subida (*Upload Speed*) según el modelo teórico del laboratorio y el rendimiento real obtenido.
+## 2. Modelos de cálculo de velocidad
 
----
+La prueba transmite 10 iteraciones consecutivas del archivo de 1 KB sobre una única conexión TCP establecida. Para analizar el rendimiento, el benchmark evalúa tres modelos de velocidad:
 
-## 2. Modelos Matemáticos y Fórmulas del Laboratorio
+### 2.1 Variante A: modelo con costo de conexión por envío (2 x RTT)
 
-### 2.1 Tiempo Total de Transmisión
-El proceso inicia con una conexión TCP que incurre en un RTT inicial ($RTT_{\text{handshake}}$). Luego, la transmisión de cada archivo incurre en un RTT más el tiempo de transmisión:
+Este modelo calcula el tiempo de ciclo sumando el establecimiento de conexión y el tiempo de transmisión:
 
-$$\text{Total Time} = \text{RTT} + (\text{RTT} + \text{transmit time})$$
+$$\text{Total Time} = \text{RTT} + (\text{RTT} + \text{transmit time}) \approx 2 \times \text{RTT}$$
 
-### 2.2 Velocidad de Transmisión Simple (Fórmula del Laboratorio)
-La velocidad simple se define en función del tamaño de ventana/archivo y el tiempo de ciclo:
+En enlaces de red rápidos, el tiempo de transmisión de 1 KB es despreciable frente al RTT ($T_{\text{trans}} \approx 0$). La velocidad resulta en:
 
-$$\text{Speed} = \frac{\text{windowSize}}{\sim\text{RTT}}$$
+$$\text{Speed} = \frac{\text{windowSize}}{\sim\text{RTT}} = \frac{1000 \times 8}{2 \times \text{RTT}}$$
 
-**Ejemplo de referencia del enunciado:**
-Transmitiendo un archivo de 1 KB con un RTT asumido constante de $32\text{ ms}$ ($0.032\text{ s}$):
+Para un RTT de referencia de 32 ms:
 
 $$\text{Speed} = \frac{1000 \times 8}{2 \times 0.032} = \frac{8000}{0.064} = 125\text{ kbps}$$
 
-El programa evalúa tanto el valor decimal ($1000\text{ bytes} \times 8 = 8000\text{ bits}$) como el valor exacto del payload de prueba ($1024\text{ bytes} \times 8 = 8192\text{ bits}$) con el RTT medido empíricamente.
+Este cálculo representa el escenario donde cada archivo asume el costo completo de un ciclo de conexión adicional.
 
-### 2.3 Throughput Real Efectivo (Wall-Clock)
-Para contrastar el modelo teórico con la transferencia real:
+### 2.2 Variante B: modelo de conexión persistente (1 x RTT)
 
-$$\text{Throughput}_{\text{real}} = \frac{10 \times \text{Tamaño Archivo (bits)}}{\text{Tiempo Total de Transferencia (s)}}$$
+Al transmitir los 10 archivos sobre la misma sesión TCP, el handshake ocurre solo una vez al inicio. Los envíos posteriores únicamente incurren en el viaje de ida y vuelta de datos y su confirmación:
 
----
+$$\text{Tiempo por envío} = \text{RTT} + T_{\text{trans}}$$
 
-## 3. Arquitectura del Proyecto (100% C)
+Con un payload de 1 KB (1024 bytes), $T_{\text{trans}}$ tiende a cero frente al RTT en loopback o red local. El tiempo por envío es aproximadamente 1 x RTT:
+
+$$\text{Speed}_{\text{persistente}} = \frac{\text{windowSize}}{1 \times \text{RTT}} = \frac{1000 \times 8}{1 \times \text{RTT}}$$
+
+Para el mismo RTT de 32 ms:
+
+$$\text{Speed}_{\text{persistente}} = \frac{1000 \times 8}{1 \times 0.032} = 250\text{ kbps}$$
+
+Esta variante refleja la tasa esperada en un canal ya establecido al amortizar el handshake en múltiples transferencias.
+
+### 2.3 Variante C: throughput real medido (wall-clock)
+
+Registra la tasa efectiva observada por el reloj del sistema de inicio a fin para los 10 envíos completos:
+
+$$\text{Throughput} = \frac{\text{bytes transmitidos} \times 8}{\text{tiempo total (s)}} = \frac{10240 \times 8}{\text{tiempo transcurrido (s)}}$$
+
+Esta métrica incluye los tiempos del kernel, procesamiento del socket receptor, confirmaciones TCP y pausas entre paquetes.
+
+## 3. Estructura del proyecto
 
 ```
 lab09-speedtest/
-├── Makefile                 # Automatización de compilación (macOS / Linux)
-├── README.md                # Documentación completa y guía de ejecución
-├── run_speedtest.sh         # Script de ejecución automatizada con tcpdump y pf/iptables
+├── Makefile                 # Reglas de compilación para macOS y Linux
+├── README.md                # Documentación del proyecto
+├── .gitignore               # Exclusiones de Git
+├── run_speedtest.sh         # Script de ejecución con tcpdump y firewall
 ├── assets/
-│   └── 1kb-image            # Archivo binario de prueba de exactamente 1024 bytes (1 KB)
+│   └── 1kb-image            # Archivo de prueba de 1024 bytes (1 KB)
 ├── include/
-│   ├── checksum.h           # Funciones de checksum IPv4 y pseudo-header TCP
-│   ├── ip_header.h          # Definición de cabecera IPv4 y constructor
-│   ├── tcp_header.h         # Definición de cabecera TCP y constructor
-│   ├── raw_socket.h         # Capa de abstracción de sockets raw (macOS pcap / Linux)
-│   ├── ping.h               # Medidor de latencia ICMP en C
-│   ├── logger.h             # Logger con formato de segmentos TCP y colores ANSI
-│   └── speedtest.h          # Estructuras de sesión, métricas y prototipos
+│   ├── checksum.h           # Declaraciones de checksum IPv4 y TCP
+│   ├── ip_header.h          # Estructura y constructor IPv4
+│   ├── tcp_header.h         # Estructura y constructor TCP
+│   ├── raw_socket.h         # Abstracción de sockets raw (macOS pcap / Linux)
+│   ├── ping.h               # Medición de latencia ICMP
+│   ├── logger.h             # Salida formateada de segmentos TCP
+│   └── speedtest.h          # Métricas y control de sesión
 └── src/
-    ├── checksum.c           # Algoritmo de checksum de complemento a 1
-    ├── ip_header.c          # Constructor de IP (maneja byte-order BSD vs Linux)
+    ├── checksum.c           # Checksum de complemento a 1
+    ├── ip_header.c          # Constructor IPv4 (maneja orden BSD vs Linux)
     ├── tcp_header.c         # Constructor de segmentos TCP
-    ├── raw_socket.c         # Enchufe de sockets raw y captura
-    ├── ping.c               # Implementación de Ping ICMP nativo en C
-    ├── logger.c             # Formateo de paquetes y resumen
-    ├── speedtest_client.c   # Cliente principal Raw Sockets (las 3 etapas)
-    └── speedtest_server.c   # Servidor TCP en C para el endpoint receptor
+    ├── raw_socket.c         # Envío raw y captura de paquetes
+    ├── ping.c               # Ping ICMP nativo
+    ├── logger.c             # Formateo y volcado de paquetes
+    ├── speedtest_client.c   # Cliente de prueba con sockets raw
+    └── speedtest_server.c   # Servidor receptor en C
 ```
 
----
+## 4. Requisitos del sistema
 
-## 4. Requisitos del Sistema
-
-- **Compilador**: `gcc` o `clang` con soporte para C99 / C11.
-- **Herramientas de red**: `tcpdump`, `make`.
-- **Plataformas soportadas**:
-  - **macOS** (utiliza `libpcap` nativo incluido en el sistema y `pfctl` para suprimir RST del kernel).
-  - **Linux** (utiliza sockets raw nativos y `iptables`).
-- **Permisos**: Requiere privilegios de superusuario (`sudo`) únicamente para abrir el socket raw y capturar paquetes.
-
----
+- Compilador C99 o C11 (gcc o clang).
+- Herramientas del sistema: make y tcpdump.
+- macOS (requiere libpcap y pfctl) o Linux (requiere AF_INET SOCK_RAW e iptables).
+- Privilegios de administrador (sudo) para abrir sockets raw y capturar paquetes.
 
 ## 5. Compilación
 
-Para compilar tanto el cliente como el servidor:
+Compilar cliente y servidor:
 
 ```bash
 make
 ```
 
-Para limpiar los binarios compilados:
+Limpiar ejecutables y archivos temporales:
 
 ```bash
 make clean
 ```
 
-Para empaquetar el proyecto en el archivo `.zip` para entrega en GES:
+Empaquetar el archivo zip para entrega:
 
 ```bash
 make zip
 ```
 
----
-
 ## 6. Ejecución
 
-### Opción A: Ejecución Automatizada (Recomendada)
+### Opción A: ejecución automatizada
 
-El script `run_speedtest.sh` se encarga de todo el ciclo de vida:
+El script `run_speedtest.sh` ejecuta la secuencia completa:
 1. Compila los binarios en C.
-2. Configura temporalmente el firewall (`pf` en macOS o `iptables` en Linux) para evitar que el kernel envíe paquetes `RST` automáticos.
-3. Inicia el servidor de prueba `speedtest_server` en segundo plano en el puerto 5001.
-4. Inicia `tcpdump` para registrar todo el tráfico en `speedtest.pcap`.
-5. Ejecuta `speedtest_client` con sudo, realizando las 3 etapas y guardando el log en `speedtest.log`.
-6. Detiene `tcpdump`, muestra el análisis del flujo de paquetes capturados y restaura el firewall a su estado original.
+2. Configura una regla de firewall temporal (pf en macOS o iptables en Linux) para que el kernel no emita paquetes RST al recibir tráfico en puertos efímeros raw.
+3. Inicia el servidor `speedtest_server` en segundo plano en el puerto 5001.
+4. Inicia tcpdump en segundo plano hacia `speedtest.pcap`.
+5. Ejecuta `speedtest_client` con sudo, guardando el registro en `speedtest.log`.
+6. Detiene tcpdump, muestra el resumen de paquetes capturados y restaura el estado original del firewall.
 
 ```bash
 ./run_speedtest.sh
 ```
 
-Parámetros opcionales:
-- `-p <puerto>`: Especificar puerto TCP (por defecto: 5001).
-- `-i <interfaz>`: Especificar interfaz de captura (por defecto `lo0` en macOS o `lo` en Linux).
-- `--keep-server`: Mantiene el servidor activo al finalizar la prueba.
+Opciones disponibles:
+- `-p <puerto>`: Puerto TCP de destino (default: 5001).
+- `-i <interfaz>`: Interfaz de red (default: `lo0` en macOS, `lo` en Linux).
+- `--keep-server`: Mantiene el servidor en ejecución al terminar.
 
----
+### Opción B: ejecución manual
 
-### Opción B: Ejecución Manual Paso a Paso
+#### 1. Suprimir RST automático del kernel
 
-#### 1. Configurar regla para suprimir TCP RST del kernel
-Cuando un socket raw envía paquetes TCP desde un puerto efímero sin que el kernel tenga un socket estándar asociado, el kernel del sistema operativo responde con un paquete `RST` que abortaría la conexión. Para evitarlo:
-
-En **macOS**:
+En macOS:
 ```bash
 echo 'block drop out proto tcp from any port 40000:49999 flags R/R' | sudo pfctl -f -
 sudo pfctl -e
 ```
 
-En **Linux**:
+En Linux:
 ```bash
 sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST --sport 40000:49999 -j DROP
 ```
 
-#### 2. Iniciar el Servidor TCP (Terminal 1)
+#### 2. Iniciar el servidor (Terminal 1)
 ```bash
 ./build/speedtest_server -p 5001
 ```
 
-#### 3. Iniciar tcpdump para inspeccionar el flujo (Terminal 2)
+#### 3. Iniciar tcpdump (Terminal 2)
 ```bash
 sudo tcpdump -i lo0 -nn "tcp port 5001"
 ```
 
-#### 4. Ejecutar el Cliente Raw Socket (Terminal 3)
+#### 4. Ejecutar el cliente (Terminal 3)
 ```bash
 sudo ./build/speedtest_client -l 127.0.0.1 -s 127.0.0.1 -p 5001 -f assets/1kb-image -i lo0
 ```
 
-#### 5. Restaurar el firewall al finalizar
-En **macOS**:
+#### 5. Restaurar firewall al finalizar
+
+En macOS:
 ```bash
 sudo pfctl -f /etc/pf.conf
 ```
-En **Linux**:
+
+En Linux:
 ```bash
 sudo iptables -D OUTPUT -p tcp --tcp-flags RST RST --sport 40000:49999 -j DROP
 ```
 
----
+## 7. Flujo de paquetes TCP
 
-## 7. Flujo de Paquetes TCP y Flags
-
-Durante la ejecución, se observa en `tcpdump` y en el log de la aplicación la secuencia estricta del protocolo TCP:
+Durante la prueba, tcpdump registra el siguiente intercambio:
 
 ```text
-1. Handshake TCP (3-Way):
+1. Handshake TCP (3-way):
    Client -> Server  [SYN]      SEQ=X ACK=0
-   Server -> Client  [SYN, ACK] SEQ=Y ACK=X+1    <-- Se calcula Initial RTT
+   Server -> Client  [SYN, ACK] SEQ=Y ACK=X+1    <-- RTT de handshake
    Client -> Server  [ACK]      SEQ=X+1 ACK=Y+1
 
-2. Transmisión de Archivos (10 iteraciones sobre la misma conexión):
-   Para cada transferencia i (1..10):
+2. Transmisión del archivo (10 envíos sobre el mismo canal):
+   Para cada archivo i (1..10):
      Client -> Server  [PSH, ACK] SEQ=X_i ACK=Y_i LEN=1024 DATA=(1 KB payload)
-     Server -> Client  [PSH, ACK] SEQ=Y_i ACK=X_i+1024 LEN=4 DATA="ACK\n"  <-- Se calcula RTT_i
+     Server -> Client  [PSH, ACK] SEQ=Y_i ACK=X_i+1024 LEN=4 DATA="ACK\n"  <-- RTT del envio
      Client -> Server  [ACK]      SEQ=X_i+1024 ACK=Y_i+4
 
-3. Cierre de Conexión (Connection Teardown):
+3. Cierre de conexión:
    Client -> Server  [FIN, ACK] SEQ=Final ACK=Final
    Server -> Client  [ACK]      SEQ=... ACK=Final+1
    Server -> Client  [FIN, ACK] SEQ=... ACK=Final+1
    Client -> Server  [ACK]      SEQ=Final+1 ACK=Server_Fin+1
 ```
 
----
-
-## 8. Ejemplo de Salida del Programa
+## 8. Formato de salida del cliente
 
 ```text
-╔════════════════════════════════════════════════════════════╗
-║ SPEEDTEST: RAW SOCKETS TCP BENCHMARK                       ║
-║ 3 Stages: Latency, RAW TCP Handshake, 10x 1KB File Upload  ║
-╚════════════════════════════════════════════════════════════╝
-
----------- STAGE 1: LATENCY MEASUREMENT (ICMP PING) ----------
-2026-10-18 09:20:00.123 speedtest_client.c: Pinging target 127.0.0.1 (4 probes)...
-2026-10-18 09:20:00.340 speedtest_client.c: Ping Success: Sent=4, Received=4, Min=0.145 ms, Avg=0.180 ms, Max=0.220 ms
-2026-10-18 09:20:00.341 speedtest_client.c: Loaded payload: 1024 bytes from 'assets/1kb-image'
-
----------- STAGE 2: TCP 3-WAY HANDSHAKE (RAW SOCKET) ----------
-Client -> Server [SYN] SEQ=1829472190
-Server -> Client [SYN, ACK] SEQ=4192847101 ACK=1829472191
-2026-10-18 09:20:00.345 speedtest_client.c: Initial Handshake RTT: 0.850 ms (SYN -> SYN+ACK)
-Client -> Server [ACK] SEQ=1829472191 ACK=4192847102
-
----------- STAGE 2: 10x 1KB FILE TRANSMISSION OVER RAW TCP ----------
--> File Transfer  1/10: RTT =   0.450 ms | SEQ=1829472191 ACK=1829473215
--> File Transfer  2/10: RTT =   0.420 ms | SEQ=1829473215 ACK=1829474239
--> File Transfer  3/10: RTT =   0.410 ms | SEQ=1829474239 ACK=1829475263
-...
--> File Transfer 10/10: RTT =   0.430 ms | SEQ=1829481407 ACK=1829482431
-
----------- TCP CONNECTION TEARDOWN ----------
-Client -> Server [FIN, ACK] SEQ=1829482431 ACK=...
-Server -> Client [FIN, ACK] SEQ=... ACK=1829482432
-Client -> Server [ACK] SEQ=1829482432 ACK=...
-
 ======================================================================
                     SPEEDTEST PERFORMANCE SUMMARY                     
 ======================================================================
@@ -238,23 +211,26 @@ Client -> Server [ACK] SEQ=1829482432 ACK=...
    * Payload per Transfer:                  1024 bytes (1 KB)
    * Transfers Completed:                     10 transfers
    * Total Bytes Transmitted:              10240 bytes
-   * Transfer RTT (Min):                   0.410 ms
    * Transfer RTT (Average):               0.435 ms
-   * Transfer RTT (Max):                   0.490 ms
    * Total Wall-Clock Elapsed Time:      115.200 ms
 ----------------------------------------------------------------------
- [STAGE 3] Speed Calculations (Lab Specification)
+ [STAGE 3] Speed Calculations & Throughput Variants
    * Formula: Total Time = RTT + (RTT + transmit time)
      Total Cycle Time:                     1.285 ms  (Initial RTT + Avg Transfer RTT)
      Assumed Cycle (2 * Avg RTT):          0.870 ms
 
-   * Formula Speed (Decimal 1000 B, 2 * RTT):
-     Speed = (1000 * 8) / (2 * 0.000435 s) =    9195.40 kbps (  9.20 Mbps)
+ [VARIANTE A] Modelo con Costo de Conexion por Envio (2 x RTT):
+   * Supuesto: Cada envio asume RTT_handshake + (RTT + T_trans) ~= 2 * RTT
+     - Con 1000 Bytes: (1000 * 8) / (2 * 0.000435 s) =    9195.40 kbps (  9.20 Mbps)
+     - Con 1024 Bytes: (1024 * 8) / (2 * 0.000435 s) =    9416.09 kbps (  9.42 Mbps)
 
-   * Formula Speed (Binary 1024 B, 2 * RTT):
-     Speed = (1024 * 8) / (2 * 0.000435 s) =    9416.09 kbps (  9.42 Mbps)
+ [VARIANTE B] Conexion Persistente / Misma Conexion TCP (Modelo 1 x RTT):
+   * Supuesto: Handshake unico inicial; cada envio es RTT + T_trans ~= 1 * RTT (T_trans ~= 0)
+     - Con 1000 Bytes: (1000 * 8) / (1 * 0.000435 s) =   18390.80 kbps ( 18.39 Mbps)
+     - Con 1024 Bytes: (1024 * 8) / (1 * 0.000435 s) =   18832.18 kbps ( 18.83 Mbps)
 
-   * Effective Upload Throughput (Actual Wall-Clock):
-     Throughput = (10240 * 8) / (0.115200 s) =   711.11 kbps (  0.71 Mbps)
+ [VARIANTE C] Rendimiento Efectivo Empirico (Throughput Real Wall-Clock):
+   * Supuesto: Medicion real del tiempo total transcurrido para los 10 archivos
+     - Throughput:     (10240 * 8) / (0.115200 s) =     711.11 kbps (  0.71 Mbps)
 ======================================================================
 ```
