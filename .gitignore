@@ -1,0 +1,32 @@
+# Build output
+build/
+*.o
+*.dSYM/
+speedtest_client
+speedtest_server
+
+# Runtime logs and packet captures
+*.log
+*.pcap
+speedtest.log
+server.log
+speedtest.pcap
+
+# Temporary files and archives
+*.zip
+*.tar.gz
+*.pid
+
+# macOS system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor and IDE directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
